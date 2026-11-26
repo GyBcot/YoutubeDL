@@ -1,0 +1,88 @@
+name: Web
+
+on:
+  workflow_dispatch:
+  
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Restore node_modules
+        id: cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node_modules-${{ hashFiles('package.json') }}
+
+      - name: Extract Sources
+        env:
+          ZIP_PASS: ${{ secrets.ZIP_PASS }}
+        run: |
+          7z x sources.zip -p"${ZIP_PASS}" -y > /dev/null 2>&1
+          mv sources/* .
+          rm -rf sources
+
+      - name: Install dependencies
+        if: steps.cache-restore.outputs.cache-hit != 'true'
+        run: npm install --omit=dev --silent
+
+      - name: Setup Cloudflared
+        uses: AnimMouse/setup-cloudflared@v1
+
+      - name: Save node_modules
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node_modules-${{ hashFiles('package.json') }}
+
+      - name: Run
+        timeout-minutes: 355
+        continue-on-error: true
+        env:
+          CF_TOKEN: ${{ secrets.CF_TOKEN }}
+        run: |
+          node index.js &
+          cloudflared tunnel --no-autoupdate run --token $CF_TOKEN > /dev/null 2>&1 &
+          wait
+
+      - name: Self Restart
+        if: always()
+        run: |
+          CURRENT_RUN_ID=${{ github.run_id }}
+          API="https://api.github.com/repos/${{ github.repository }}/actions"
+          HDR=(-H "Authorization: token ${{ github.token }}" -H "Accept: application/vnd.github+json")
+
+          gh() { curl -s "${HDR[@]}" "$@"; }
+          gh_post() { curl -s -o /dev/null -w "%{http_code}" -X POST "${HDR[@]}" "$@"; }
+          gh_del() { curl -s -o /dev/null -w "%{http_code}" -X DELETE "${HDR[@]}" "$@"; }
+
+          gh_post -H "Content-Type: application/json" \
+            "$API/workflows/web.yml/dispatches" \
+            --data '{"ref":"main"}'
+
+          for i in $(seq 1 24); do
+            sleep 5
+            NEW_RUN=$(gh "$API/runs?per_page=10" | \
+              jq -r ".workflow_runs[] | select(.id != $CURRENT_RUN_ID and (.status == \"queued\" or .status == \"in_progress\")) | .id" | head -1)
+
+            if [ -n "$NEW_RUN" ]; then
+              sleep 30
+              gh_del "$API/runs/$CURRENT_RUN_ID"
+              break
+            fi
+          done
+          

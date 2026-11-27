@@ -1,4 +1,4 @@
-name: Web
+name: WebActions
 
 on:
   workflow_dispatch:
@@ -50,7 +50,7 @@ jobs:
           key: ${{ runner.os }}-node_modules-${{ hashFiles('package.json') }}
 
       - name: Run
-        timeout-minutes: 355
+        timeout-minutes: 350
         continue-on-error: true
         env:
           CF_TOKEN: ${{ secrets.CF_TOKEN }}
@@ -60,7 +60,7 @@ jobs:
           wait
 
       - name: Self Restart
-        if: always()
+        if: success()
         run: |
           CURRENT_RUN_ID=${{ github.run_id }}
           API="https://api.github.com/repos/${{ github.repository }}/actions"
